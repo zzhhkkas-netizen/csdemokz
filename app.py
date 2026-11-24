@@ -17,6 +17,7 @@ from flask import Flask, jsonify, request, send_from_directory
 from werkzeug.exceptions import HTTPException
 
 from highlights import TICKRATE, analyze
+from replay import build_replay
 from unpack import UnpackError, detect_kind, unpack
 
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "1024"))
@@ -51,6 +52,9 @@ def sample():
 
     kills, ends, rosters = make_sample()
     res = analyze(kills, ends, rosters)
+    from sample_data import make_sample_replay
+
+    res["replay"] = make_sample_replay(kills, ends)
     res["meta"] = {"map": "демо-данные (синтетический матч)", "tickrate": TICKRATE, "sample": True}
     return jsonify(res)
 
@@ -78,10 +82,16 @@ def analyze_upload():
 
         from parse_demo import parse_demo
 
-        kills, ends, rosters, meta = parse_demo(dem_path)
+        kills, ends, rosters, meta, positions, windows = parse_demo(dem_path)
         if kills.empty or ends.empty:
             return jsonify(error="В демке не найдено убийств или раундов (разминка/неполный файл?)"), 422
         res = analyze(kills, ends, rosters)
+        res["replay"] = None
+        if positions is not None:
+            try:
+                res["replay"] = build_replay(positions, windows, kills)
+            except Exception:
+                res["replay"] = None  # без реплея, но хайлайты остаются
         meta["tickrate"] = TICKRATE
         res["meta"] = meta
         return jsonify(res)

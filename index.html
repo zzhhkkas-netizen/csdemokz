@@ -62,6 +62,17 @@
   th { color: var(--muted); font-weight: 500; }
   h2 { font-size: 17px; margin: 26px 0 10px; }
   .hidden { display: none; }
+  /* ---- реплей ---- */
+  .rbox { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin: 14px 0; }
+  .rbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+  .rbar select { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 7px 8px; font: inherit; }
+  .rbar input[type=range] { flex: 1; min-width: 140px; accent-color: var(--accent); }
+  #cv { width: 100%; aspect-ratio: 1 / 1; display: block; background: #0b0f14; border-radius: 10px; touch-action: manipulation; }
+  #feed { margin-top: 8px; font-size: 13px; min-height: 22px; }
+  #feed div { padding: 1px 0; color: var(--muted); }
+  #feed b.ct { color: var(--ct); } #feed b.t { color: var(--t); }
+  .watch { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 600; }
+
 </style>
 </head>
 <body>
@@ -80,6 +91,21 @@
 
   <div id="result" class="hidden">
     <div class="meta" id="meta"></div>
+    <div class="rbox hidden" id="rbox">
+      <div class="rbar">
+        <button id="rplay" style="min-width:44px">▶</button>
+        <select id="rround"></select>
+        <select id="rspeed">
+          <option value="0.5">0.5×</option><option value="1" selected>1×</option>
+          <option value="2">2×</option><option value="4">4×</option>
+        </select>
+        <span class="small" id="rtime">0:00</span>
+        <input type="range" id="rslider" min="0" max="100" value="0">
+      </div>
+      <canvas id="cv" width="900" height="900"></canvas>
+      <div id="feed"></div>
+      <div class="small" style="margin-top:6px">Вид сверху. Карта рисуется по следам движения игроков (серые точки). Круг вокруг игрока — выбранный хайлайт.</div>
+    </div>
     <div class="filters" id="filters"></div>
     <div id="list"></div>
     <h2>Игроки</h2>
@@ -105,6 +131,135 @@ function fmtTime(tick) {
   return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
 }
 function setStatus(msg, err) { const s = $("#status"); s.textContent = msg; s.className = err ? "err" : ""; }
+
+
+// ================= 2D-реплей =================
+let R = null, rs = {round: 0, cur: 0, playing: false, speed: 1, focus: null, last: 0, raf: 0};
+const cv = $("#cv"), cx = cv.getContext("2d");
+let trail = null, view = null;
+const COL = {2: "#f0b24a", 3: "#5aa9ff"};
+
+function initReplay(rep) {
+  R = rep && rep.frames && rep.frames.length ? rep : null;
+  rs.playing = false; cancelAnimationFrame(rs.raf); $("#rplay").textContent = "▶";
+  $("#rbox").classList.toggle("hidden", !R);
+  if (!R) return;
+  const sel = $("#rround"); sel.replaceChildren();
+  R.rounds.forEach((r, i) => { const o = el("option", "", "Раунд " + r.round); o.value = i; sel.append(o); });
+  buildTrail(); setRound(0, null);
+}
+
+function buildTrail() {
+  const b = R.bounds, W = cv.width, H = cv.height;
+  const s = Math.min(W / (b.maxx - b.minx), H / (b.maxy - b.miny));
+  view = {s, ox: (W - (b.maxx - b.minx) * s) / 2, oy: (H - (b.maxy - b.miny) * s) / 2};
+  trail = document.createElement("canvas"); trail.width = W; trail.height = H;
+  const t = trail.getContext("2d"); t.fillStyle = "rgba(139,152,167,0.16)";
+  for (const f of R.frames) for (const p of f.p) if (p) { const q = toScreen(p[0], p[1]); t.fillRect(q[0] - 2, q[1] - 2, 4, 4); }
+}
+function toScreen(x, y) {
+  const b = R.bounds;
+  return [view.ox + (x - b.minx) * view.s, cv.height - (view.oy + (y - b.miny) * view.s)];
+}
+
+function setRound(i, tick) {
+  rs.round = i; $("#rround").value = i;
+  const r = R.rounds[i], sl = $("#rslider");
+  sl.min = r.start; sl.max = r.end;
+  rs.cur = tick == null ? r.start : Math.min(Math.max(tick, r.start), r.end);
+  sl.value = rs.cur; draw();
+}
+function playHighlight(h) {
+  const i = R.rounds.findIndex(r => r.round === h.round);
+  if (i < 0) return;
+  rs.focus = h.steamid == null ? null : String(h.steamid);
+  setRound(i, h.goto_tick);
+  startPlay();
+}
+function startPlay() {
+  const r = R.rounds[rs.round];
+  if (rs.cur >= r.end) rs.cur = r.start;
+  rs.playing = true; rs.last = performance.now(); $("#rplay").textContent = "⏸";
+  cancelAnimationFrame(rs.raf); rs.raf = requestAnimationFrame(loop);
+}
+function stopPlay() { rs.playing = false; $("#rplay").textContent = "▶"; cancelAnimationFrame(rs.raf); }
+function loop(now) {
+  if (!rs.playing) return;
+  const r = R.rounds[rs.round];
+  rs.cur += (now - rs.last) / 1000 * TICKRATE * rs.speed; rs.last = now;
+  if (rs.cur >= r.end) { rs.cur = r.end; draw(); stopPlay(); return; }
+  $("#rslider").value = rs.cur; draw(); rs.raf = requestAnimationFrame(loop);
+}
+$("#rplay").onclick = () => { if (!R) return; rs.playing ? stopPlay() : startPlay(); };
+$("#rround").onchange = e => { setRound(+e.target.value, null); };
+$("#rspeed").onchange = e => { rs.speed = +e.target.value; };
+$("#rslider").oninput = e => { rs.cur = +e.target.value; draw(); };
+
+function frameAt(tick) {  // индекс кадра <= tick внутри раунда (бинарный поиск)
+  const r = R.rounds[rs.round]; let lo = r.f0, hi = r.f1;
+  while (lo < hi) { const m = (lo + hi + 1) >> 1; if (R.frames[m].t <= tick) lo = m; else hi = m - 1; }
+  return lo;
+}
+function posAt(i, j, tick) {  // позиция игрока j с интерполяцией между кадрами
+  const r = R.rounds[rs.round], a = R.frames[i].p[j];
+  if (!a) return null;
+  const nx = i < r.f1 ? R.frames[i + 1] : null, b = nx && nx.p[j];
+  if (!b || a[3] <= 0 || b[3] <= 0) return a;
+  const f = Math.min(1, Math.max(0, (tick - R.frames[i].t) / (nx.t - R.frames[i].t)));
+  if (Math.abs(b[0] - a[0]) > 600 || Math.abs(b[1] - a[1]) > 600) return a;  // телепорт/респаун
+  return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2], a[3], a[4]];
+}
+function mmss(ticks) { const s = Math.max(0, Math.floor(ticks / TICKRATE)); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); }
+
+function draw() {
+  if (!R) return;
+  const W = cv.width, H = cv.height, r = R.rounds[rs.round], tick = rs.cur;
+  cx.clearRect(0, 0, W, H); cx.drawImage(trail, 0, 0);
+  const i = frameAt(tick), pos = R.players.map((_, j) => posAt(i, j, tick));
+
+  // линии убийств (последние 1.5 сек)
+  R.kills.forEach(k => {
+    const age = tick - k.t; if (age < 0 || age > 96 || k.t < r.start || k.t > r.end) return;
+    const a = k.a == null ? null : pos[k.a], v = pos[k.v]; if (!a || !v) return;
+    const A = toScreen(a[0], a[1]), V = toScreen(v[0], v[1]);
+    cx.strokeStyle = `rgba(248,81,73,${1 - age / 96})`; cx.lineWidth = 2;
+    cx.beginPath(); cx.moveTo(A[0], A[1]); cx.lineTo(V[0], V[1]); cx.stroke();
+  });
+
+  // игроки
+  pos.forEach((p, j) => {
+    if (!p) return;
+    const q = toScreen(p[0], p[1]), alive = p[3] > 0, col = COL[p[4]] || "#aaa";
+    if (!alive) {
+      cx.strokeStyle = "rgba(200,200,200,.55)"; cx.lineWidth = 2; cx.beginPath();
+      cx.moveTo(q[0] - 6, q[1] - 6); cx.lineTo(q[0] + 6, q[1] + 6);
+      cx.moveTo(q[0] + 6, q[1] - 6); cx.lineTo(q[0] - 6, q[1] + 6); cx.stroke(); return;
+    }
+    const yaw = p[2] * Math.PI / 180;
+    cx.strokeStyle = col; cx.lineWidth = 3; cx.beginPath();
+    cx.moveTo(q[0], q[1]); cx.lineTo(q[0] + Math.cos(yaw) * 20, q[1] - Math.sin(yaw) * 20); cx.stroke();
+    cx.fillStyle = col; cx.beginPath(); cx.arc(q[0], q[1], 9, 0, 7); cx.fill();
+    if (rs.focus && R.players[j].steamid === rs.focus) {
+      cx.strokeStyle = "#fff"; cx.lineWidth = 2; cx.beginPath(); cx.arc(q[0], q[1], 15, 0, 7); cx.stroke();
+    }
+    cx.fillStyle = "#e6edf3"; cx.font = "bold 15px system-ui, sans-serif"; cx.textAlign = "center";
+    cx.fillText(R.players[j].name, q[0], q[1] - 18);
+  });
+
+  $("#rtime").textContent = mmss(tick - r.start) + " / " + mmss(r.end - r.start);
+
+  // киллфид: последние 5 убийств раунда до текущего момента
+  const feed = $("#feed"); feed.replaceChildren();
+  const done = R.kills.filter(k => k.t >= r.start && k.t <= tick).slice(-5);
+  done.forEach(k => {
+    const row = el("div"), team = j => { const p = pos[j]; return p ? (p[4] === 3 ? "ct" : "t") : ""; };
+    const a = k.a == null ? null : R.players[k.a], v = R.players[k.v];
+    const ab = el("b", k.a == null ? "" : team(k.a), a ? a.name : "мир");
+    const vb = el("b", team(k.v), v.name);
+    row.append(ab, document.createTextNode(` [${k.w}${k.hs ? " HS" : ""}] → `), vb);
+    feed.append(row);
+  });
+}
 
 // ---------- загрузка
 const drop = $("#drop"), fileInput = $("#file");
@@ -160,6 +315,7 @@ function show(d) {
     b.dataset.key = key; f.append(b);
   });
   renderPlayers(d.players);
+  initReplay(d.replay);
   show2();
 }
 function show2() {
@@ -200,7 +356,13 @@ function card(h) {
     catch (_) { inp.select(); document.execCommand("copy"); }
     btn.textContent = "Скопировано ✓"; setTimeout(() => btn.textContent = "Копировать", 1500);
   };
-  cmd.append(inp, btn); c.append(cmd);
+  cmd.append(inp, btn);
+  if (R) {
+    const w = el("button", "watch", "▶ Смотреть реплей");
+    w.onclick = () => { playHighlight(h); $("#rbox").scrollIntoView({behavior: "smooth", block: "start"}); };
+    cmd.prepend(w);
+  }
+  c.append(cmd);
   return c;
 }
 

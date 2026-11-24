@@ -45,3 +45,44 @@ def make_sample():
          for r in (1, 2, 3) for pid, (n, t) in PLAYERS.items()]
     )
     return kills, round_ends, rosters
+
+
+def make_sample_replay(kills=None, round_ends=None):
+    """Синтетические позиции игроков для демонстрации 2D-реплея."""
+    import math
+
+    import numpy as np
+
+    from replay import STEP, build_replay, round_windows, sample_ticks
+
+    if kills is None or round_ends is None:
+        kills, round_ends, _ = make_sample()
+    windows = round_windows(round_ends)
+    # где кто умер: {(round, steamid): tick}
+    ends = [w[2] for w in windows]
+    death = {}
+    for _, r in kills.iterrows():
+        rnd = int(np.searchsorted(ends, r["tick"], side="left")) + 1
+        death[(rnd, int(r["user_steamid"]))] = int(r["tick"])
+
+    rows = []
+    for rnd, start, end, _ in windows:
+        dur = end - start
+        for t in sample_ticks([(rnd, start, end, None)], STEP):
+            for pid, (name, team) in PLAYERS.items():
+                sid = 76561190000 + pid
+                lane = ((pid - 1) % 5 - 2) * 420
+                if team == T:
+                    x0, y0, x1, y1 = -1900, -1500 + lane, 300, 200 + lane * 0.6
+                else:
+                    x0, y0, x1, y1 = 1900, 1500 + lane, -200, -100 + lane * 0.6
+                dt = death.get((rnd, sid))
+                tt = min(t, dt) if dt is not None else t
+                f = min(1.0, max(0.0, (tt - start) / (dur * 0.7)))
+                x = x0 + (x1 - x0) * f + 60 * math.sin(tt / 140 + pid)
+                y = y0 + (y1 - y0) * f + 60 * math.cos(tt / 170 + pid)
+                yaw = math.degrees(math.atan2(y1 - y0, x1 - x0))
+                alive = dt is None or t < dt
+                rows.append({"tick": t, "steamid": sid, "name": name, "X": x, "Y": y,
+                             "yaw": yaw, "health": 100 if alive else 0, "team_num": team})
+    return build_replay(pd.DataFrame(rows), windows, kills)

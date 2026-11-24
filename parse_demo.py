@@ -6,7 +6,11 @@ import pandas as pd
 
 
 def parse_demo(path: str):
-    """Возвращает (kills, round_ends, rosters, meta)."""
+    """Возвращает (kills, round_ends, rosters, meta, positions, windows).
+
+    positions/windows могут быть None, если позиции прочитать не удалось —
+    тогда список хайлайтов всё равно работает, просто без 2D-реплея.
+    """
     from demoparser2 import DemoParser  # импорт здесь, чтобы остальное работало без пакета
 
     parser = DemoParser(path)
@@ -34,7 +38,8 @@ def parse_demo(path: str):
     round_ends = round_ends.sort_values("tick").reset_index(drop=True)
 
     rosters = _rosters(parser, round_ends)
-    return kills, round_ends, rosters, meta
+    positions, windows = _positions(parser, round_ends)
+    return kills, round_ends, rosters, meta, positions, windows
 
 
 def _rosters(parser, round_ends: pd.DataFrame):
@@ -51,3 +56,25 @@ def _rosters(parser, round_ends: pd.DataFrame):
         return df[["round", "steamid", "name", "team_num"]].drop_duplicates()
     except Exception:
         return None  # fallback: «5 на 5»
+
+
+def _positions(parser, round_ends: pd.DataFrame):
+    """Позиции игроков по кадрам (4 в секунду) для 2D-реплея."""
+    from replay import STEP, round_windows, sample_ticks
+
+    try:
+        try:
+            freeze = [int(t) for t in parser.parse_event("round_freeze_end")["tick"]]
+        except Exception:
+            freeze = []
+        windows = round_windows(round_ends, freeze)
+        ticks = sample_ticks(windows, STEP)
+        if not ticks:
+            return None, None
+        try:
+            df = parser.parse_ticks(["X", "Y", "yaw", "health", "team_num"], ticks=ticks)
+        except Exception:
+            df = parser.parse_ticks(["X", "Y", "health", "team_num"], ticks=ticks)
+        return df, windows
+    except Exception:
+        return None, None
